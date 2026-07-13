@@ -14,6 +14,24 @@ import urllib.request
 
 logger = logging.getLogger(__name__)
 
+# Actions accepted by CommandTranslator / SYSTEM_PROMPT — fail closed on others.
+ALLOWED_ACTIONS = frozenset({
+    'arm_offboard',
+    'takeoff',
+    'position_ned',
+    'goto',
+    'orbit',
+    'square_survey',
+    'square',
+    'look_at_gps',
+    'look_at',
+    'set_speed',
+    'set_heading',
+    'hold',
+    'land',
+    'rtl',
+})
+
 SYSTEM_PROMPT = """You are the autonomous flight controller for a PX4 drone.
 Given live telemetry, YOLO camera detections, and a user mission, reason step-by-step
 then output a single JSON command.
@@ -185,13 +203,26 @@ class LLMClient:
             with urllib.request.urlopen(req, timeout=30) as resp:
                 result = json.loads(resp.read().decode('utf-8'))
 
-            text = result['message']['content'].strip()
+            message = result.get('message') if isinstance(result, dict) else None
+            if not isinstance(message, dict) or 'content' not in message:
+                raise ValueError('LLM API response missing message.content')
+
+            text = str(message['content']).strip()
+            if not text:
+                raise ValueError('LLM returned empty content')
             # Strip markdown code fences if present
             text = text.replace('```json', '').replace('```', '').strip()
 
             command = json.loads(text)
+            if not isinstance(command, dict):
+                raise ValueError(f'LLM JSON must be an object, got {type(command).__name__}')
             if 'action' not in command:
                 raise ValueError(f"LLM response missing 'action' key: {command}")
+            action = command['action']
+            if not isinstance(action, str) or action not in ALLOWED_ACTIONS:
+                raise ValueError(
+                    f"LLM action {action!r} is not in allowlist {sorted(ALLOWED_ACTIONS)}"
+                )
 
             # Store user turn and assistant response in history
             self.history.append({'role': 'user', 'content': user_content})
