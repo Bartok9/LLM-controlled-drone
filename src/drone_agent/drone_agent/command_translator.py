@@ -27,6 +27,33 @@ MAV_CMD_DO_CHANGE_SPEED = 178
 # PX4 navigation modes
 PX4_CUSTOM_MAIN_MODE_OFFBOARD = 6.0
 
+# NED altitude (z down): match SYSTEM_PROMPT limits in llm_client
+# z=-5 → 5 m AGL floor; z=-120 → 120 m AGL ceiling.
+NED_Z_MIN = -120.0  # most negative = highest AGL allowed
+NED_Z_MAX = -5.0    # least negative = minimum hover / cabin altitude
+
+
+def _finite_float(value, default=None):
+    """Parse a numeric value; return default if missing/invalid/non-finite."""
+    if value is None:
+        return default
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(num):
+        return default
+    return num
+
+
+def _clamp_ned_alt_z(z: float) -> float:
+    """Clamp NED down-altitude into the safe AGL window used by the LLM prompt."""
+    z = float(z)
+    if z > 0:
+        # Prefer fail-closed: force to NED (negative) if a positive slipped through.
+        z = -abs(z)
+    return max(NED_Z_MIN, min(NED_Z_MAX, z))
+
 
 class CommandTranslator:
     """Translates LLM JSON commands to PX4 ROS2 messages."""
@@ -106,6 +133,9 @@ class CommandTranslator:
         Returns:
             List of (topic_name, message) tuples to publish.
         """
+        if not isinstance(cmd, dict):
+            return []
+
         action = cmd.get('action', 'hold')
         messages = []
 
@@ -115,64 +145,97 @@ class CommandTranslator:
             self.orbiting = False
             self.square_active = False
             if action == 'takeoff':
-                self.target_z = -abs(cmd.get('alt', 10.0))
+                alt = _finite_float(cmd.get('alt'), 10.0)
+                if alt is None:
+                    alt = 10.0
+                self.target_z = _clamp_ned_alt_z(-abs(alt))
             messages.extend(self._arm_and_offboard())
 
         # ── Direct NED position (primary navigation primitive) ───────────
         elif action == 'position_ned':
-            self.target_x = float(cmd.get('x', self.target_x))
-            self.target_y = float(cmd.get('y', self.target_y))
-            self.target_z = float(cmd.get('z', self.target_z))
+            x = _finite_float(cmd.get('x'), self.target_x)
+            y = _finite_float(cmd.get('y'), self.target_y)
+            z = _finite_float(cmd.get('z'), self.target_z)
+            if x is None or y is None or z is None:
+                return messages
+            self.target_x = x
+            self.target_y = y
+            self.target_z = _clamp_ned_alt_z(z)
             yaw = cmd.get('yaw_rad')
-            self.target_yaw = float(yaw) if yaw is not None else float('nan')
+            if yaw is None:
+                self.target_yaw = float('nan')
+            else:
+                yaw_f = _finite_float(yaw, None)
+                self.target_yaw = yaw_f if yaw_f is not None else float('nan')
             self.orbiting = False
             self.square_active = False
 
         # ── GPS-based goto (legacy alias) ────────────────────────────────
         elif action == 'goto':
-            lat = cmd.get('lat', self.home_lat)
-            lon = cmd.get('lon', self.home_lon)
-            alt = cmd.get('alt', abs(self.target_z))
+            lat = _finite_float(cmd.get('lat'), self.home_lat)
+            lon = _finite_float(cmd.get('lon'), self.home_lon)
+            alt = _finite_float(cmd.get('alt'), abs(self.target_z))
+            if lat is None or lon is None or alt is None:
+                return messages
             n, e, d = self.gps_to_local(lat, lon, alt)
             self.target_x = n
             self.target_y = e
-            self.target_z = d
+            self.target_z = _clamp_ned_alt_z(d)
             self.orbiting = False
             self.square_active = False
 
         # ── Circular orbit ───────────────────────────────────────────────
         elif action == 'orbit':
-            self.orbit_radius = float(cmd.get('radius', 20.0))
-            self.orbit_speed = float(cmd.get('speed', 5.0))
+            radius = _finite_float(cmd.get('radius'), 20.0)
+            speed = _finite_float(cmd.get('speed'), 5.0)
+            if radius is None or radius <= 0.0 or speed is None or speed < 0.0:
+                # Invalid geometry — fail closed, do not enable orbit
+                return messages
+
+            self.orbit_radius = radius
+            self.orbit_speed = speed
             self.orbit_angle = 0.0
             self.square_active = False
 
             if 'cx' in cmd:
                 # New style: LLM computed NED centre directly
-                self.orbit_center_x = float(cmd['cx'])
-                self.orbit_center_y = float(cmd['cy'])
-                self.orbit_alt_z = float(cmd.get('alt_z', self.target_z))
+                cx = _finite_float(cmd.get('cx'), None)
+                cy = _finite_float(cmd.get('cy'), None)
+                alt_z = _finite_float(cmd.get('alt_z'), self.target_z)
+                if cx is None or cy is None or alt_z is None:
+                    return messages
+                self.orbit_center_x = cx
+                self.orbit_center_y = cy
+                self.orbit_alt_z = _clamp_ned_alt_z(alt_z)
             else:
                 # Legacy style: GPS lat/lon centre
-                lat = cmd.get('lat', self.home_lat)
-                lon = cmd.get('lon', self.home_lon)
-                alt = cmd.get('alt', abs(self.target_z))
+                lat = _finite_float(cmd.get('lat'), self.home_lat)
+                lon = _finite_float(cmd.get('lon'), self.home_lon)
+                alt = _finite_float(cmd.get('alt'), abs(self.target_z))
+                if lat is None or lon is None or alt is None:
+                    return messages
                 n, e, _ = self.gps_to_local(lat, lon, alt)
                 self.orbit_center_x = n
                 self.orbit_center_y = e
-                self.orbit_alt_z = -abs(alt)
+                self.orbit_alt_z = _clamp_ned_alt_z(-abs(alt))
 
             self.orbiting = True
 
         # ── Square / rectangular survey ──────────────────────────────────
         elif action in ('square_survey', 'square'):
-            side = float(cmd.get('side', 10.0))
-            speed = float(cmd.get('speed', 2.0))
+            side = _finite_float(cmd.get('side'), 10.0)
+            speed = _finite_float(cmd.get('speed'), 2.0)
+            if side is None or side <= 0.0 or speed is None or speed < 0.0:
+                return messages
             # alt_z (new style, already negative) or alt (legacy, positive)
             if 'alt_z' in cmd:
-                alt_z = float(cmd['alt_z'])
+                alt_z = _finite_float(cmd['alt_z'], None)
             else:
-                alt_z = -abs(float(cmd.get('alt', abs(self.target_z))))
+                alt_legacy = _finite_float(cmd.get('alt'), abs(self.target_z))
+                alt_z = -abs(alt_legacy) if alt_legacy is not None else None
+            if alt_z is None:
+                return messages
+            alt_z = _clamp_ned_alt_z(alt_z)
             cx = self.target_x
             cy = self.target_y
             half = side / 2.0
@@ -193,9 +256,11 @@ class CommandTranslator:
 
         # ── Camera ROI ───────────────────────────────────────────────────
         elif action in ('look_at_gps', 'look_at'):
-            lat = cmd.get('lat', self.home_lat)
-            lon = cmd.get('lon', self.home_lon)
-            alt = cmd.get('alt', 0.0)
+            lat = _finite_float(cmd.get('lat'), self.home_lat)
+            lon = _finite_float(cmd.get('lon'), self.home_lon)
+            alt = _finite_float(cmd.get('alt'), 0.0)
+            if lat is None or lon is None or alt is None:
+                return messages
             msg = self._make_vehicle_command(
                 MAV_CMD_DO_SET_ROI_LOCATION,
                 param5=lat,
@@ -206,13 +271,19 @@ class CommandTranslator:
 
         # ── Speed / heading ──────────────────────────────────────────────
         elif action == 'set_speed':
-            self.target_speed = float(cmd.get('speed', 5.0))
+            speed = _finite_float(cmd.get('speed'), None)
+            if speed is None or speed < 0.0:
+                return messages
+            self.target_speed = speed
             self.orbit_speed = self.target_speed
 
         elif action == 'set_heading':
             # Accept both "heading_deg" (new) and "heading" (legacy)
             heading_deg = cmd.get('heading_deg', cmd.get('heading', 0.0))
-            self.target_yaw = math.radians(float(heading_deg))
+            heading_f = _finite_float(heading_deg, None)
+            if heading_f is None:
+                return messages
+            self.target_yaw = math.radians(heading_f)
 
         # ── Land / RTL ───────────────────────────────────────────────────
         elif action == 'land':
