@@ -3,19 +3,29 @@
 #
 # Prerequisites:
 #   - Ubuntu 24.04
-#   - ROS2 Humble installed (sudo apt install ros-jazzy-desktop)
+#   - ROS 2 Jazzy installed (sudo apt install ros-jazzy-desktop)
+#     Note: earlier drafts of this script incorrectly mentioned Humble;
+#     the packages below are Jazzy-only.
 #   - PX4-Autopilot cloned and built separately
 #
 # Usage:
-#   cd /home/user/Ai_controlled_drone
+#   cd /path/to/LLM-controlled-drone   # or your workspace root that holds src/
 #   bash setup_workspace.sh
 
 set -e
 
 echo "=== AI-Controlled Drone Workspace Setup ==="
 
-# Source ROS2
-source /opt/ros/jazzy/setup.bash
+ROS_SETUP="${ROS_SETUP:-/opt/ros/jazzy/setup.bash}"
+if [ ! -f "$ROS_SETUP" ]; then
+  echo "ERROR: ROS 2 Jazzy setup not found at: $ROS_SETUP" >&2
+  echo "Install Jazzy first: https://docs.ros.org/en/jazzy/Installation/Ubuntu-Install-Debs.html" >&2
+  exit 1
+fi
+
+# Source ROS2 (Jazzy)
+# shellcheck source=/dev/null
+source "$ROS_SETUP"
 
 # Install ROS2 dependencies
 echo "[1/4] Installing ROS2 apt dependencies..."
