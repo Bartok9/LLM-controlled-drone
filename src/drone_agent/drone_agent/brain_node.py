@@ -30,6 +30,7 @@ from px4_msgs.msg import (
 
 from drone_agent.llm_client import LLMClient
 from drone_agent.command_translator import CommandTranslator
+from drone_agent.detection_utils import safe_bbox_center_x
 
 
 class BrainNode(Node):
@@ -217,7 +218,7 @@ class BrainNode(Node):
         target_obj = next((d for d in detections if d.get('class') == target_class), None)
         if target_obj and self.odometry:
             # bbox_center[0]: 0 = left edge, 0.5 = centre, 1 = right edge
-            bbox_cx = max(0.1, min(0.9, target_obj['bbox_center'][0]))
+            bbox_cx = safe_bbox_center_x(target_obj)
 
             # Extract yaw from VehicleOdometry quaternion [w, x, y, z]
             q = self.odometry.q

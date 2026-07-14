@@ -6,6 +6,7 @@ runs YOLOv8 inference, and publishes structured detections as JSON.
 """
 
 import json
+import math
 
 import cv2
 import numpy as np
@@ -16,6 +17,8 @@ from sensor_msgs.msg import Image
 from std_msgs.msg import String
 from cv_bridge import CvBridge
 from ultralytics import YOLO
+
+from drone_agent.detection_utils import sanitize_detection
 
 
 class YoloDetector(Node):
@@ -74,17 +77,26 @@ class YoloDetector(Node):
 
         detections = []
         h, w = frame.shape[:2]
+        if h <= 0 or w <= 0:
+            return
         for box in results.boxes:
-            x1, y1, x2, y2 = box.xyxy[0].tolist()
-            detections.append({
-                'class': results.names[int(box.cls[0])],
-                'confidence': round(float(box.conf[0]), 2),
-                'bbox_center': [
-                    round((x1 + x2) / (2 * w), 2),
-                    round((y1 + y2) / (2 * h), 2),
+            try:
+                x1, y1, x2, y2 = (float(v) for v in box.xyxy[0].tolist())
+            except (TypeError, ValueError, IndexError, AttributeError):
+                continue
+            if not all(map(math.isfinite, (x1, y1, x2, y2))):
+                continue
+            det = sanitize_detection(
+                results.names.get(int(box.cls[0]), '') if hasattr(results.names, 'get') else results.names[int(box.cls[0])],
+                float(box.conf[0]) if box.conf is not None else None,
+                [
+                    (x1 + x2) / (2 * w),
+                    (y1 + y2) / (2 * h),
                 ],
-                'bbox_area': round(((x2 - x1) * (y2 - y1)) / (w * h), 4),
-            })
+                ((x2 - x1) * (y2 - y1)) / (w * h),
+            )
+            if det is not None:
+                detections.append(det)
 
         self.latest_detections = detections
 
