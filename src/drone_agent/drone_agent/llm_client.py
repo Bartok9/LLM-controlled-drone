@@ -14,6 +14,63 @@ import urllib.request
 
 logger = logging.getLogger(__name__)
 
+
+import math
+import re
+from urllib.parse import urlparse
+
+_DEFAULT_HISTORY_TURNS = 10
+_DEFAULT_TIMEOUT_SEC = 30.0
+
+
+def normalize_ollama_base_url(url: str) -> str:
+    """Require http(s) URL; strip trailing slash and whitespace. Fail closed."""
+    if url is None:
+        raise ValueError("ollama_url is required")
+    if not isinstance(url, str):
+        raise ValueError("ollama_url must be a string")
+    raw = url.strip()
+    if not raw or any(ord(c) < 32 for c in raw):
+        raise ValueError("ollama_url is empty or contains control characters")
+    # scheme-less or dangerous schemes
+    parsed = urlparse(raw)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError("ollama_url must use http or https scheme")
+    if not parsed.netloc:
+        raise ValueError("ollama_url missing host")
+    # rebuild without trailing slash on path dump
+    base = f"{parsed.scheme}://{parsed.netloc}"
+    path = (parsed.path or "").rstrip("/")
+    if path:
+        base = base + path
+    if parsed.query or parsed.fragment:
+        raise ValueError("ollama_url must not include query or fragment")
+    return base
+
+
+def clamp_max_history_turns(n, default: int = _DEFAULT_HISTORY_TURNS) -> int:
+    if isinstance(n, bool) or n is None:
+        return default
+    try:
+        v = int(n)
+    except (TypeError, ValueError):
+        return default
+    return max(1, min(100, v))
+
+
+def clamp_request_timeout_sec(t, default: float = _DEFAULT_TIMEOUT_SEC) -> float:
+    if isinstance(t, bool) or t is None:
+        return default
+    try:
+        v = float(t)
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(v):
+        return default
+    return max(1.0, min(300.0, v))
+
+
+
 SYSTEM_PROMPT = """You are the autonomous flight controller for a PX4 drone.
 Given live telemetry, YOLO camera detections, and a user mission, reason step-by-step
 then output a single JSON command.
@@ -115,10 +172,14 @@ class LLMClient:
         model: str = 'qwen2.5:32b',
         ollama_url: str = 'http://localhost:11434',
         max_history_turns: int = 10,
+        request_timeout_sec: float = 30.0,
     ):
-        self.model = model
-        self.ollama_url = ollama_url.rstrip('/')
-        self.max_history_turns = max_history_turns
+        if not isinstance(model, str) or not model.strip():
+            raise ValueError("model must be a non-empty string")
+        self.model = model.strip()
+        self.ollama_url = normalize_ollama_base_url(ollama_url)
+        self.max_history_turns = clamp_max_history_turns(max_history_turns)
+        self.request_timeout_sec = clamp_request_timeout_sec(request_timeout_sec)
         # Rolling conversation history: list of {'role': ..., 'content': ...} dicts.
         # Does NOT include the system prompt (that is always prepended separately).
         self.history: list = []
@@ -182,7 +243,7 @@ class LLMClient:
                     'ngrok-skip-browser-warning': 'true',
                 },
             )
-            with urllib.request.urlopen(req, timeout=30) as resp:
+            with urllib.request.urlopen(req, timeout=self.request_timeout_sec) as resp:
                 result = json.loads(resp.read().decode('utf-8'))
 
             text = result['message']['content'].strip()
