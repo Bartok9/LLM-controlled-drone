@@ -30,6 +30,7 @@ from px4_msgs.msg import (
 
 from drone_agent.llm_client import LLMClient
 from drone_agent.command_translator import CommandTranslator
+from drone_agent.telemetry_format import format_drone_state_lines
 
 
 class BrainNode(Node):
@@ -364,61 +365,25 @@ class BrainNode(Node):
 
     def _format_drone_state(self) -> str:
         """Format current telemetry into a human-readable string for the LLM."""
-        lines = []
-
-        if self.gps:
-            lines.append(
-                f'GPS: lat={self.gps.latitude_deg:.6f}, '
-                f'lon={self.gps.longitude_deg:.6f}, '
-                f'alt={self.gps.altitude_msl_m:.1f}m MSL, '
-                f'fix={self.gps.fix_type}'
-            )
-        else:
-            lines.append('GPS: No fix')
-
-        if self.odometry:
-            pos = self.odometry.position
-            vel = self.odometry.velocity
-            lines.append(
-                f'Local position (NED): x={pos[0]:.1f}m, y={pos[1]:.1f}m, z={pos[2]:.1f}m'
-            )
-            lines.append(
-                f'Velocity (NED): vx={vel[0]:.1f}, vy={vel[1]:.1f}, vz={vel[2]:.1f} m/s'
-            )
-        else:
-            lines.append('Odometry: Not available')
-
-        if self.battery:
-            lines.append(
-                f'Battery: {self.battery.remaining * 100:.0f}% '
-                f'({self.battery.voltage_v:.1f}V)'
-            )
-
-        if self.vehicle_status:
-            lines.append(f'Armed: {self.armed} (from vehicle_status arming_state={self.vehicle_status.arming_state})')
-            lines.append(f'Nav state: {self.vehicle_status.nav_state}')
-        else:
-            lines.append(f'Armed: {self.armed} (vehicle_status not received — inferred from altitude)')
-
-        if self.translator.home_set:
-            lines.append(
-                f'Home GPS (NED origin): lat={self.translator.home_lat:.6f}, '
-                f'lon={self.translator.home_lon:.6f}, '
-                f'alt={self.translator.home_alt:.1f}m MSL'
-            )
-        else:
-            lines.append('Home GPS: not set yet')
-
-        lines.append(f'Orbiting: {self.translator.orbiting}')
-        if self.search_target:
-            lines.append(f'Search mode: actively scanning for "{self.search_target}"')
-        lines.append(
-            f'Current target (NED): '
-            f'x={self.translator.target_x:.1f}, '
-            f'y={self.translator.target_y:.1f}, '
-            f'z={self.translator.target_z:.1f}'
+        snap = {
+            'home_set': self.translator.home_set,
+            'home_lat': self.translator.home_lat,
+            'home_lon': self.translator.home_lon,
+            'home_alt': self.translator.home_alt,
+            'orbiting': self.translator.orbiting,
+            'target_x': self.translator.target_x,
+            'target_y': self.translator.target_y,
+            'target_z': self.translator.target_z,
+        }
+        lines = format_drone_state_lines(
+            gps=self.gps,
+            odometry=self.odometry,
+            battery=self.battery,
+            vehicle_status=self.vehicle_status,
+            translator_snapshot=snap,
+            armed=self.armed,
+            search_target=self.search_target,
         )
-
         return '\n'.join(lines)
 
 
