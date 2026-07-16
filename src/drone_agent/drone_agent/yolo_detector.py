@@ -17,6 +17,8 @@ from std_msgs.msg import String
 from cv_bridge import CvBridge
 from ultralytics import YOLO
 
+from drone_agent.yolo_params import clamp_confidence, clamp_skip_frames, safe_frame_dims
+
 
 class YoloDetector(Node):
     def __init__(self):
@@ -29,9 +31,11 @@ class YoloDetector(Node):
         self.declare_parameter('skip_frames', 2)
 
         model_path = self.get_parameter('model_path').value
-        self.conf_threshold = self.get_parameter('confidence_threshold').value
+        self.conf_threshold = clamp_confidence(
+            self.get_parameter('confidence_threshold').value
+        )
         camera_topic = self.get_parameter('camera_topic').value
-        self.skip_frames = self.get_parameter('skip_frames').value
+        self.skip_frames = clamp_skip_frames(self.get_parameter('skip_frames').value)
 
         self.get_logger().info(f'Loading YOLO model: {model_path}')
         self.model = YOLO(model_path)
@@ -68,6 +72,10 @@ class YoloDetector(Node):
             frame = self.bridge.imgmsg_to_cv2(msg, 'bgr8')
         except Exception as e:
             self.get_logger().error(f'cv_bridge conversion failed: {e}')
+            return
+
+        if safe_frame_dims(frame.shape[0], frame.shape[1]) is None:
+            self.get_logger().warn('Skipping YOLO on empty/invalid frame geometry')
             return
 
         results = self.model(frame, verbose=False, conf=self.conf_threshold)[0]
