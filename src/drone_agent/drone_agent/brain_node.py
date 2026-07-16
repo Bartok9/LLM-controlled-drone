@@ -30,6 +30,7 @@ from px4_msgs.msg import (
 
 from drone_agent.llm_client import LLMClient
 from drone_agent.command_translator import CommandTranslator
+from drone_agent.gps_home_guard import is_valid_home_fix, position_triple_valid
 
 
 class BrainNode(Node):
@@ -132,7 +133,9 @@ class BrainNode(Node):
     def _odom_cb(self, msg: VehicleOdometry):
         self.odometry = msg
         pos = msg.position
-        self.translator.update_position(pos[0], pos[1], pos[2])
+        if not position_triple_valid(pos):
+            return
+        self.translator.update_position(float(pos[0]), float(pos[1]), float(pos[2]))
         # Fallback: if vehicle_status is not arriving and the drone is more
         # than 2 m above home, it must be airborne and therefore armed.
         if self.vehicle_status is None and abs(float(pos[2])) > 2.0:
@@ -140,11 +143,13 @@ class BrainNode(Node):
 
     def _gps_cb(self, msg: SensorGps):
         self.gps = msg
-        # Set home position on first GPS fix
-        if not self.translator.home_set and msg.fix_type >= 3:
-            lat = msg.latitude_deg
-            lon = msg.longitude_deg
-            alt = msg.altitude_msl_m
+        # Set home position on first *valid* GPS fix (fail-closed on hat NaN/out-of-range)
+        if not self.translator.home_set and is_valid_home_fix(
+            msg.latitude_deg, msg.longitude_deg, msg.altitude_msl_m, msg.fix_type, min_fix=3
+        ):
+            lat = float(msg.latitude_deg)
+            lon = float(msg.longitude_deg)
+            alt = float(msg.altitude_msl_m)
             self.translator.set_home(lat, lon, alt)
             self.get_logger().info(
                 f'Home set: lat={lat:.6f}, lon={lon:.6f}, alt={alt:.1f}m'
