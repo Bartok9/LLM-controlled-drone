@@ -30,6 +30,7 @@ from px4_msgs.msg import (
 
 from drone_agent.llm_client import LLMClient
 from drone_agent.command_translator import CommandTranslator
+from drone_agent.search_target import matches_search_target, sanitize_target_class
 
 
 class BrainNode(Node):
@@ -168,7 +169,9 @@ class BrainNode(Node):
             detections = []
 
         # Target object spotted while in search orbit — stop and descend toward it
-        if self.translator.orbiting and self.search_target and self.search_target in new_classes:
+        if self.translator.orbiting and self.search_target and any(
+            matches_search_target(c, self.search_target) for c in new_classes
+        ):
             self.last_detection_classes = new_classes
             self.get_logger().info(
                 f'"{self.search_target}" detected during orbit — transitioning to hover'
@@ -319,7 +322,7 @@ class BrainNode(Node):
 
             # Orbit with a search goal: extract the YOLO class to watch for
             if action == 'orbit':
-                self.search_target = cmd.get('target_class', None)
+                self.search_target = sanitize_target_class(cmd.get('target_class', None))
                 if self.search_target:
                     self.get_logger().info(
                         f'Search orbit: will stop when YOLO detects "{self.search_target}"'
