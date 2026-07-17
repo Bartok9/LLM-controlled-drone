@@ -14,6 +14,15 @@ from px4_msgs.msg import (
     VehicleCommand,
 )
 
+from drone_agent.orbit_geometry import (
+    clamp_orbit_radius,
+    clamp_orbit_speed,
+    clamp_square_side,
+    clamp_survey_speed,
+    normalize_alt_z,
+    safe_finite_float,
+)
+
 
 # PX4 MAV_CMD constants
 MAV_CMD_NAV_TAKEOFF = 22
@@ -142,37 +151,57 @@ class CommandTranslator:
 
         # ── Circular orbit ───────────────────────────────────────────────
         elif action == 'orbit':
-            self.orbit_radius = float(cmd.get('radius', 20.0))
-            self.orbit_speed = float(cmd.get('speed', 5.0))
+            self.orbit_radius = clamp_orbit_radius(cmd.get('radius', 20.0))
+            self.orbit_speed = clamp_orbit_speed(cmd.get('speed', 5.0))
             self.orbit_angle = 0.0
             self.square_active = False
 
             if 'cx' in cmd:
                 # New style: LLM computed NED centre directly
-                self.orbit_center_x = float(cmd['cx'])
-                self.orbit_center_y = float(cmd['cy'])
-                self.orbit_alt_z = float(cmd.get('alt_z', self.target_z))
+                cx = safe_finite_float(cmd.get('cx'), 0.0)
+                cy = safe_finite_float(cmd.get('cy'), 0.0)
+                self.orbit_center_x = 0.0 if cx is None else cx
+                self.orbit_center_y = 0.0 if cy is None else cy
+                self.orbit_alt_z = normalize_alt_z(
+                    cmd_alt_z=cmd.get('alt_z'),
+                    cmd_alt=cmd.get('alt'),
+                    fallback_z=self.target_z,
+                )
             else:
                 # Legacy style: GPS lat/lon centre
                 lat = cmd.get('lat', self.home_lat)
                 lon = cmd.get('lon', self.home_lon)
                 alt = cmd.get('alt', abs(self.target_z))
-                n, e, _ = self.gps_to_local(lat, lon, alt)
+                lat_f = safe_finite_float(lat, self.home_lat)
+                lon_f = safe_finite_float(lon, self.home_lon)
+                alt_f = safe_finite_float(alt, abs(self.target_z))
+                if lat_f is None:
+                    lat_f = self.home_lat
+                if lon_f is None:
+                    lon_f = self.home_lon
+                if alt_f is None:
+                    alt_f = abs(self.target_z)
+                n, e, _ = self.gps_to_local(lat_f, lon_f, alt_f)
                 self.orbit_center_x = n
                 self.orbit_center_y = e
-                self.orbit_alt_z = -abs(alt)
+                self.orbit_alt_z = normalize_alt_z(
+                    cmd_alt_z=None,
+                    cmd_alt=alt_f,
+                    fallback_z=self.target_z,
+                )
 
             self.orbiting = True
 
         # ── Square / rectangular survey ──────────────────────────────────
         elif action in ('square_survey', 'square'):
-            side = float(cmd.get('side', 10.0))
-            speed = float(cmd.get('speed', 2.0))
+            side = clamp_square_side(cmd.get('side', 10.0))
+            speed = clamp_survey_speed(cmd.get('speed', 2.0))
             # alt_z (new style, already negative) or alt (legacy, positive)
-            if 'alt_z' in cmd:
-                alt_z = float(cmd['alt_z'])
-            else:
-                alt_z = -abs(float(cmd.get('alt', abs(self.target_z))))
+            alt_z = normalize_alt_z(
+                cmd_alt_z=cmd.get('alt_z') if 'alt_z' in cmd else None,
+                cmd_alt=cmd.get('alt') if 'alt_z' not in cmd else None,
+                fallback_z=self.target_z,
+            )
             cx = self.target_x
             cy = self.target_y
             half = side / 2.0
