@@ -9,6 +9,11 @@ import math
 import time
 
 from px4_msgs.msg import (
+from drone_agent.nav_aux_params import (
+    clamp_heading_deg,
+    clamp_target_speed_mps,
+    safe_gps_coord,
+)
     OffboardControlMode,
     TrajectorySetpoint,
     VehicleCommand,
@@ -193,9 +198,14 @@ class CommandTranslator:
 
         # ── Camera ROI ───────────────────────────────────────────────────
         elif action in ('look_at_gps', 'look_at'):
-            lat = cmd.get('lat', self.home_lat)
-            lon = cmd.get('lon', self.home_lon)
-            alt = cmd.get('alt', 0.0)
+            lat, lon, alt = safe_gps_coord(
+                cmd.get('lat', self.home_lat),
+                cmd.get('lon', self.home_lon),
+                cmd.get('alt', 0.0),
+                default_lat=self.home_lat,
+                default_lon=self.home_lon,
+                default_alt=0.0,
+            )
             msg = self._make_vehicle_command(
                 MAV_CMD_DO_SET_ROI_LOCATION,
                 param5=lat,
@@ -206,13 +216,15 @@ class CommandTranslator:
 
         # ── Speed / heading ──────────────────────────────────────────────
         elif action == 'set_speed':
-            self.target_speed = float(cmd.get('speed', 5.0))
+            self.target_speed = clamp_target_speed_mps(cmd.get('speed', 5.0))
             self.orbit_speed = self.target_speed
 
         elif action == 'set_heading':
             # Accept both "heading_deg" (new) and "heading" (legacy)
-            heading_deg = cmd.get('heading_deg', cmd.get('heading', 0.0))
-            self.target_yaw = math.radians(float(heading_deg))
+            heading_deg = clamp_heading_deg(
+                cmd.get('heading_deg', cmd.get('heading', 0.0))
+            )
+            self.target_yaw = math.radians(heading_deg)
 
         # ── Land / RTL ───────────────────────────────────────────────────
         elif action == 'land':
