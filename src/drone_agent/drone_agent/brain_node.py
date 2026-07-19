@@ -30,6 +30,7 @@ from px4_msgs.msg import (
 
 from drone_agent.llm_client import LLMClient
 from drone_agent.command_translator import CommandTranslator
+from drone_agent.llm_call_gate import clamp_min_llm_call_interval_sec, should_allow_llm_call
 
 
 class BrainNode(Node):
@@ -39,11 +40,15 @@ class BrainNode(Node):
         # Parameters
         self.declare_parameter('llm_interval_sec', 7.0)
         self.declare_parameter('offboard_rate_hz', 10.0)
+        self.declare_parameter('min_llm_call_interval_sec', 3.0)
         self.declare_parameter('ollama_url', 'http://localhost:11434')
         self.declare_parameter('ollama_model', 'qwen2.5:32b')
 
         self.llm_interval = self.get_parameter('llm_interval_sec').value
         offboard_rate = self.get_parameter('offboard_rate_hz').value
+        self.min_llm_call_interval = clamp_min_llm_call_interval_sec(
+            self.get_parameter('min_llm_call_interval_sec').value
+        )
         ollama_url = self.get_parameter('ollama_url').value
         ollama_model = self.get_parameter('ollama_model').value
 
@@ -248,6 +253,9 @@ class BrainNode(Node):
 
     def _user_cmd_cb(self, msg: String):
         command = msg.data.strip()
+        if not command:
+            self.get_logger().warn('Ignoring empty user command')
+            return
 
         # Special commands handled locally — no LLM call needed
         if command.lower() in ('reset', 'reset memory', 'clear memory', 'new mission'):
@@ -292,8 +300,8 @@ class BrainNode(Node):
     def _call_llm(self):
         """Format state and call the LLM for a new command."""
         now = time.time()
-        # Rate limit: don't call more than once per 3 seconds
-        if now - self.last_llm_call < 3.0:
+        # Rate limit: don't call more often than min_llm_call_interval (default 3s)
+        if not should_allow_llm_call(now, self.last_llm_call, self.min_llm_call_interval):
             return
         self.last_llm_call = now
 
