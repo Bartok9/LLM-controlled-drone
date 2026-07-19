@@ -30,6 +30,7 @@ from px4_msgs.msg import (
 
 from drone_agent.llm_client import LLMClient
 from drone_agent.command_translator import CommandTranslator
+from drone_agent.ollama_model_sanitize import sanitize_ollama_model
 
 
 class BrainNode(Node):
@@ -45,7 +46,7 @@ class BrainNode(Node):
         self.llm_interval = self.get_parameter('llm_interval_sec').value
         offboard_rate = self.get_parameter('offboard_rate_hz').value
         ollama_url = self.get_parameter('ollama_url').value
-        ollama_model = self.get_parameter('ollama_model').value
+        ollama_model = sanitize_ollama_model(self.get_parameter('ollama_model').value)
 
         # Initialize components
         self.llm = LLMClient(model=ollama_model, ollama_url=ollama_url)

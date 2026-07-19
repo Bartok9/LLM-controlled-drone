@@ -12,6 +12,11 @@ import json
 import logging
 import urllib.request
 
+from drone_agent.ollama_model_sanitize import (
+    clamp_max_history_turns,
+    sanitize_ollama_model,
+)
+
 logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """You are the autonomous flight controller for a PX4 drone.
@@ -116,9 +121,9 @@ class LLMClient:
         ollama_url: str = 'http://localhost:11434',
         max_history_turns: int = 10,
     ):
-        self.model = model
+        self.model = sanitize_ollama_model(model)
         self.ollama_url = ollama_url.rstrip('/')
-        self.max_history_turns = max_history_turns
+        self.max_history_turns = clamp_max_history_turns(max_history_turns)
         # Rolling conversation history: list of {'role': ..., 'content': ...} dicts.
         # Does NOT include the system prompt (that is always prepended separately).
         self.history: list = []
