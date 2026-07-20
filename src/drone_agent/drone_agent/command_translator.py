@@ -8,6 +8,8 @@ into PX4 OffboardControlMode, TrajectorySetpoint, and VehicleCommand messages.
 import math
 import time
 
+from drone_agent.square_params import clamp_square_threshold_m, finite_ned_xyz
+
 from px4_msgs.msg import (
     OffboardControlMode,
     TrajectorySetpoint,
@@ -63,6 +65,10 @@ class CommandTranslator:
 
     def update_position(self, x: float, y: float, z: float):
         """Update the drone's current local position (NED) for waypoint tracking."""
+        coords = finite_ned_xyz(x, y, z)
+        if coords is None:
+            return
+        x, y, z = coords
         if self.square_active and self.square_waypoints:
             wp = self.square_waypoints[self.square_wp_index]
             dist = math.sqrt((x - wp[0]) ** 2 + (y - wp[1]) ** 2)
@@ -185,6 +191,9 @@ class CommandTranslator:
             self.square_wp_index = 0
             self.square_alt_z = alt_z
             self.square_speed = speed
+            self.square_threshold = clamp_square_threshold_m(
+                cmd.get('threshold', self.square_threshold)
+            )
             self.square_active = True
             self.orbiting = False
             self.target_x = self.square_waypoints[0][0]
