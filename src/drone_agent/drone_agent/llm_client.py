@@ -12,6 +12,8 @@ import json
 import logging
 import urllib.request
 
+from drone_agent.ollama_options import clamp_temperature
+
 logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """You are the autonomous flight controller for a PX4 drone.
@@ -115,10 +117,12 @@ class LLMClient:
         model: str = 'qwen2.5:32b',
         ollama_url: str = 'http://localhost:11434',
         max_history_turns: int = 10,
+        temperature: float = 0.2,
     ):
         self.model = model
         self.ollama_url = ollama_url.rstrip('/')
         self.max_history_turns = max_history_turns
+        self.temperature = clamp_temperature(temperature)
         # Rolling conversation history: list of {'role': ..., 'content': ...} dicts.
         # Does NOT include the system prompt (that is always prepended separately).
         self.history: list = []
@@ -167,7 +171,7 @@ class LLMClient:
             'messages': messages,
             'stream': False,
             'options': {
-                'temperature': 0.2,
+                'temperature': self.temperature,
             },
             'format': 'json',
         }).encode('utf-8')
