@@ -30,6 +30,7 @@ from px4_msgs.msg import (
 
 from drone_agent.llm_client import LLMClient
 from drone_agent.command_translator import CommandTranslator
+from drone_agent.offboard_timer import clamp_offboard_rate_hz, offboard_period_sec
 
 
 class BrainNode(Node):
@@ -43,7 +44,7 @@ class BrainNode(Node):
         self.declare_parameter('ollama_model', 'qwen2.5:32b')
 
         self.llm_interval = self.get_parameter('llm_interval_sec').value
-        offboard_rate = self.get_parameter('offboard_rate_hz').value
+        offboard_rate = clamp_offboard_rate_hz(self.get_parameter('offboard_rate_hz').value)
         ollama_url = self.get_parameter('ollama_url').value
         ollama_model = self.get_parameter('ollama_model').value
 
@@ -118,8 +119,8 @@ class BrainNode(Node):
 
         # --- Timers ---
 
-        # 10Hz offboard control loop (MUST be continuous for PX4 OFFBOARD mode)
-        period = 1.0 / offboard_rate
+        # Offboard control loop (MUST be continuous for PX4 OFFBOARD mode)
+        period = offboard_period_sec(offboard_rate)
         self.create_timer(period, self._offboard_loop)
 
         # LLM decision timer
