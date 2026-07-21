@@ -30,6 +30,7 @@ from px4_msgs.msg import (
 
 from drone_agent.llm_client import LLMClient
 from drone_agent.command_translator import CommandTranslator
+from drone_agent.battery_format import format_battery_line
 
 
 class BrainNode(Node):
@@ -390,8 +391,10 @@ class BrainNode(Node):
 
         if self.battery:
             lines.append(
-                f'Battery: {self.battery.remaining * 100:.0f}% '
-                f'({self.battery.voltage_v:.1f}V)'
+                format_battery_line(
+                    getattr(self.battery, 'remaining', None),
+                    getattr(self.battery, 'voltage_v', None),
+                )
             )
 
         if self.vehicle_status:
