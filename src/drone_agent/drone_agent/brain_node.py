@@ -30,6 +30,12 @@ from px4_msgs.msg import (
 
 from drone_agent.llm_client import LLMClient
 from drone_agent.command_translator import CommandTranslator
+from drone_agent.target_approach import (
+    clamp_approach_distance_m,
+    clamp_hover_alt_z,
+    safe_float,
+    yaw_from_odom_quaternion,
+)
 
 
 class BrainNode(Node):
@@ -199,41 +205,53 @@ class BrainNode(Node):
         self.search_target = None  # search complete — clear the target
 
         # Current position from odometry or fall back to last known target
+        cur_x = cur_y = None
+        current_alt = None
         if self.odometry:
-            cur_x = float(self.odometry.position[0])
-            cur_y = float(self.odometry.position[1])
-            current_alt = abs(float(self.odometry.position[2]))
-        else:
-            cur_x = self.translator.target_x
-            cur_y = self.translator.target_y
-            current_alt = abs(self.translator.target_z)
+            pos = self.odometry.position
+            cur_x = safe_float(pos[0])
+            cur_y = safe_float(pos[1])
+            z = safe_float(pos[2])
+            if z is not None:
+                current_alt = abs(z)
+        if cur_x is None:
+            cur_x = safe_float(self.translator.target_x) or 0.0
+        if cur_y is None:
+            cur_y = safe_float(self.translator.target_y) or 0.0
+        if current_alt is None:
+            tz = safe_float(self.translator.target_z)
+            current_alt = abs(tz) if tz is not None else 10.0
 
-        # Descend to 40% of current altitude, never below 5 m
-        hover_alt_z = -max(5.0, current_alt * 0.4)
+        # Descend to 40% of current altitude, never below 5 m (fail-closed clamps)
+        hover_alt_z = clamp_hover_alt_z(current_alt)
         target_x = cur_x
         target_y = cur_y
         target_yaw = float('nan')
 
-        target_obj = next((d for d in detections if d.get('class') == target_class), None)
-        if target_obj and self.odometry:
+        target_obj = next(
+            (d for d in detections if isinstance(d, dict) and d.get('class') == target_class),
+            None,
+        )
+        if target_obj is not None and self.odometry is not None:
             # bbox_center[0]: 0 = left edge, 0.5 = centre, 1 = right edge
-            bbox_cx = max(0.1, min(0.9, target_obj['bbox_center'][0]))
+            bbox_cx = 0.5
+            center = target_obj.get('bbox_center') if isinstance(target_obj, dict) else None
+            if isinstance(center, (list, tuple)) and len(center) >= 1:
+                cx = safe_float(center[0])
+                if cx is not None:
+                    bbox_cx = max(0.1, min(0.9, cx))
 
-            # Extract yaw from VehicleOdometry quaternion [w, x, y, z]
-            q = self.odometry.q
-            yaw = math.atan2(
-                2.0 * (float(q[0]) * float(q[3]) + float(q[1]) * float(q[2])),
-                1.0 - 2.0 * (float(q[2]) ** 2 + float(q[3]) ** 2),
-            )
+            yaw = yaw_from_odom_quaternion(self.odometry.q)
+            if yaw is not None:
+                # Horizontal FOV ~90 deg; offset bearing left/right by pixel position
+                bearing_offset = (bbox_cx - 0.5) * math.radians(90)
+                target_yaw = yaw + bearing_offset
 
-            # Horizontal FOV ~90 deg; offset bearing left/right by pixel position
-            bearing_offset = (bbox_cx - 0.5) * math.radians(90)
-            target_yaw = yaw + bearing_offset
-
-            # Fly a short distance toward the estimated target position
-            move_dist = min(current_alt * 0.3, 8.0)
-            target_x = cur_x + move_dist * math.cos(target_yaw)
-            target_y = cur_y + move_dist * math.sin(target_yaw)
+                # Fly a short distance toward the estimated target position
+                move_dist = clamp_approach_distance_m(current_alt)
+                target_x = cur_x + move_dist * math.cos(target_yaw)
+                target_y = cur_y + move_dist * math.sin(target_yaw)
+            # else: invalid quaternion → hover in place (no lateral move)
 
         self.translator.target_x = target_x
         self.translator.target_y = target_y
