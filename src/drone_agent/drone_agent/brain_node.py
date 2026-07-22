@@ -10,7 +10,6 @@ This node:
 6. Publishes offboard control at 10Hz continuously
 """
 
-import json
 import math
 import time
 
@@ -30,6 +29,10 @@ from px4_msgs.msg import (
 
 from drone_agent.llm_client import LLMClient
 from drone_agent.command_translator import CommandTranslator
+from drone_agent.detections_payload import (
+    detection_class_names,
+    parse_detections_payload,
+)
 
 
 class BrainNode(Node):
@@ -160,12 +163,9 @@ class BrainNode(Node):
     def _yolo_cb(self, msg: String):
         self.latest_detections = msg.data
 
-        try:
-            detections = json.loads(msg.data)
-            new_classes = {d['class'] for d in detections}
-        except (json.JSONDecodeError, KeyError):
-            new_classes = set()
-            detections = []
+        # Fail-closed: non-list JSON / non-dict elements must not crash control.
+        detections = parse_detections_payload(msg.data)
+        new_classes = detection_class_names(detections)
 
         # Target object spotted while in search orbit — stop and descend toward it
         if self.translator.orbiting and self.search_target and self.search_target in new_classes:
