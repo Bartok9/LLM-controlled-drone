@@ -30,6 +30,7 @@ from px4_msgs.msg import (
 
 from drone_agent.llm_client import LLMClient
 from drone_agent.command_translator import CommandTranslator
+from drone_agent.user_command_sanitize import sanitize_user_command
 
 
 class BrainNode(Node):
@@ -247,7 +248,10 @@ class BrainNode(Node):
         )
 
     def _user_cmd_cb(self, msg: String):
-        command = msg.data.strip()
+        command = sanitize_user_command(msg.data)
+        if command is None:
+            self.get_logger().warn('Ignoring empty or invalid user command')
+            return
 
         # Special commands handled locally — no LLM call needed
         if command.lower() in ('reset', 'reset memory', 'clear memory', 'new mission'):
