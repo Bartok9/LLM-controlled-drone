@@ -14,6 +14,8 @@ from px4_msgs.msg import (
     VehicleCommand,
 )
 
+from drone_agent.gps_ned import gps_to_ned
+
 
 # PX4 MAV_CMD constants
 MAV_CMD_NAV_TAKEOFF = 22
@@ -84,18 +86,20 @@ class CommandTranslator:
 
         Returns:
             Tuple of (north_m, east_m, down_m) in NED frame.
+            On invalid input, keeps the current target NED (fail-closed).
         """
-        if not self.home_set:
-            return 0.0, 0.0, -(alt - self.home_alt)
-
-        dlat = lat - self.home_lat
-        dlon = lon - self.home_lon
-
-        north_m = dlat * 111_139.0
-        east_m = dlon * 111_139.0 * math.cos(math.radians(self.home_lat))
-        down_m = -(alt - self.home_alt)  # NED: negative altitude = up
-
-        return north_m, east_m, down_m
+        ned = gps_to_ned(
+            lat,
+            lon,
+            alt,
+            self.home_lat,
+            self.home_lon,
+            self.home_alt,
+            self.home_set,
+        )
+        if ned is None:
+            return self.target_x, self.target_y, self.target_z
+        return ned
 
     def process_command(self, cmd: dict) -> list:
         """Translate an LLM command dict into a list of PX4 messages to publish.
